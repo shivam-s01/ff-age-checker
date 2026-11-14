@@ -76,6 +76,16 @@ export default {
       if (!res.ok) return json({ error: `API error (${res.status})` }, 502);
       const raw = await res.json();
 
+      if (url.searchParams.get("raw") === "1") return json(raw);
+      const flat = {};
+      (function w(n, p, d) {
+        if (d > 3 || !n || typeof n !== "object") return;
+        for (const [k, v] of Object.entries(n)) {
+          const key = p ? p + "." + k : k;
+          if (v && typeof v === "object") w(v, key, d + 1);
+          else if (v !== null && v !== "" && Object.keys(flat).length < 150) flat[key] = String(v).slice(0, 120);
+        }
+      })(raw, "", 0);
       const info = raw.AccountInfo || raw.accountInfo || raw;
       const guild = raw.GuildInfo || raw.guildInfo || {};
 
@@ -97,7 +107,10 @@ export default {
         title: str(find(info, ["AccountTitle", "TitleName"])),
         guild: str(find(guild, ["GuildName"])),
         bio: str(find(info, ["AccountSignature", "Signature", "Bio"])),
-        avatar: null, // API returns only a numeric avatar id
+        avatarId: str(find(info, ["AccountAvatarId", "AvatarId", "HeadPic", "AccountAvatar"])),
+        bannerId: str(find(info, ["AccountBannerId", "BannerId", "AccountBanner"])),
+        avatar: env.AVATAR_URL ? env.AVATAR_URL.replace("{id}", str(find(info, ["AccountAvatarId", "AvatarId", "HeadPic", "AccountAvatar"])) || "") : null,
+        extra: flat,
         createdAt: toMs(find(info, ["AccountCreateTime"])),
         lastLogin: toMs(find(info, ["AccountLastLogin", "AccountLastLoginTime", "LastLoginAt"])),
       });
