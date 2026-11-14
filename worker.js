@@ -50,11 +50,93 @@ const toMs = (v) => {
 const num = (v) => (v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
 const str = (v) => (v === null || v === undefined || v === "" ? null : String(v).slice(0, 200));
 
+const IMG_API = "https://proapis.hlgamingofficial.com/main/games/freefire/meta/api";
+
+// Find the first http(s) image URL anywhere in an object
+function findUrl(node, depth = 0) {
+  if (!node) return null;
+  if (typeof node === "string") return /^https?:\/\//i.test(node) ? node : null;
+  if (typeof node !== "object" || depth > 4) return null;
+  for (const v of Object.values(node)) {
+    const r = findUrl(v, depth + 1);
+    if (r) return r;
+  }
+  return null;
+}
+
+// Signed image URLs expire in ~5 minutes, so never cache these calls.
+async function getImages(env, uid, region, ctx) {
+  const cache = typeof caches !== "undefined" ? caches.default : null;
+  const key = new Request(`https://img-cache.local/${region}/${uid}`);
+  if (cache) { const hit = await cache.match(key); if (hit) return hit.json(); }
+  const out = await fetchImages(env, uid, region);
+  if (cache && (out.avatar || out.banner)) {
+    const put = cache.put(key, new Response(JSON.stringify(out), { headers: { "Cache-Control": "max-age=240", "Content-Type": "application/json" } }));
+    ctx && ctx.waitUntil ? ctx.waitUntil(put) : await put;
+  }
+  return out;
+}
+async function fetchImages(env, uid, region) {
+  const out = { avatar: null, banner: null };
+  const base = env.API_URL || DEFAULT_API;
+  try {
+    const u = new URL(base);
+    u.searchParams.set("sectionName", "AllData");
+    u.searchParams.set("PlayerUid", uid);
+    u.searchParams.set("region", region.toLowerCase());
+    u.searchParams.set("useruid", env.HL_USERUID);
+    u.searchParams.set("api", env.HL_API_KEY);
+    u.searchParams.set("filter", "isIMG");
+    const r = await fetch(u.toString());
+    if (r.ok) {
+      const j = await r.json();
+      const info = j.AccountInfo || j.accountInfo || j;
+      out.avatar = findUrl({ a: info.AccountAvatarId });
+      out.banner = findUrl({ a: info.AccountBannerId });
+    }
+  } catch (e) {}
+  if (out.avatar) return out;
+  try {
+    const u = new URL(IMG_API);
+    u.searchParams.set("sectionName", "image");
+    u.searchParams.set("useruid", env.HL_USERUID);
+    u.searchParams.set("api", env.HL_API_KEY);
+    u.searchParams.set("playeruid", uid);
+    u.searchParams.set("region", region.toLowerCase());
+    u.searchParams.set("isBeta", "true");
+    const r = await fetch(u.toString());
+    if (r.ok) {
+      const j = await r.json();
+      const res = j.result || j;
+      out.avatar = findUrl(res.outfitUrl) || findUrl(res.avatarUrl) || out.avatar;
+      out.banner = findUrl(res.bannerUrl) || out.banner;
+    }
+  } catch (e) {}
+  return out;
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
 
     const url = new URL(request.url);
+
+    // /api/avatar?uid=..&region=.. -> streams the image with CORS so the browser and canvas can use it
+    if (url.pathname.endsWith("/avatar") || url.pathname.endsWith("/banner")) {
+      const kind = url.pathname.endsWith("/banner") ? "banner" : "avatar";
+      const u = (url.searchParams.get("uid") || "").trim();
+      const rg = (url.searchParams.get("region") || "IND").trim().toUpperCase();
+      if (!/^\d{6,12}$/.test(u) || !/^[A-Z]{2,4}$/.test(rg) || !env.HL_USERUID || !env.HL_API_KEY)
+        return new Response("bad request", { status: 400, headers: CORS });
+      const imgs = await getImages(env, u, rg, ctx);
+      if (!imgs[kind]) return new Response("not found", { status: 404, headers: CORS });
+      const img = await fetch(imgs[kind]);
+      if (!img.ok) return new Response("not found", { status: 404, headers: CORS });
+      return new Response(img.body, {
+        headers: { "Content-Type": img.headers.get("Content-Type") || "image/png", "Cache-Control": "public, max-age=3600", ...CORS },
+      });
+    }
+
     const uid = (url.searchParams.get("uid") || "").trim();
     const region = (url.searchParams.get("region") || "IND").trim().toUpperCase();
 
@@ -109,7 +191,8 @@ export default {
         bio: str(find(info, ["AccountSignature", "Signature", "Bio"])),
         avatarId: str(find(info, ["AccountAvatarId", "AvatarId", "HeadPic", "AccountAvatar"])),
         bannerId: str(find(info, ["AccountBannerId", "BannerId", "AccountBanner"])),
-        avatar: env.AVATAR_URL ? env.AVATAR_URL.replace("{id}", str(find(info, ["AccountAvatarId", "AvatarId", "HeadPic", "AccountAvatar"])) || "") : null,
+        avatar: `/api/avatar?uid=${uid}&region=${region}`,
+        banner: `/api/banner?uid=${uid}&region=${region}`,
         extra: flat,
         createdAt: toMs(find(info, ["AccountCreateTime"])),
         lastLogin: toMs(find(info, ["AccountLastLogin", "AccountLastLoginTime", "LastLoginAt"])),
