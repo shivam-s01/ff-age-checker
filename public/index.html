@@ -369,7 +369,7 @@ const pretty = (k) => k.split(".").pop().replace(/([a-z])([A-Z])/g, "$1 $2").rep
 /* ---------- rarity model ----------
    Estimated cumulative share of all Free Fire accounts created by a given date.
    Anchored to the public release timeline; shape follows typical registration growth. */
-const CDF = [["2017-08-01",0],["2018-01-01",.035],["2018-07-01",.08],["2019-02-07T23:28:46",.1322],["2020-01-01",.27],["2021-01-01",.50],["2022-01-01",.70],["2023-01-01",.82],["2024-01-01",.90],["2025-01-01",.955],["2026-01-01",.985]]
+const CDF = [["2017-08-01",0],["2018-01-01",.035],["2018-07-01",.08],["2019-02-08T06:58:46",.1322],["2020-01-01",.27],["2021-01-01",.50],["2022-01-01",.70],["2023-01-01",.82],["2024-01-01",.90],["2025-01-01",.955],["2026-01-01",.985]]
   .map(([d, v]) => [Date.parse(d.includes("T") ? d + "Z" : d + "T00:00:00Z"), v]);
 function cdf(ms) {
   const now = Date.now(), pts = CDF.concat([[Math.max(now, CDF[CDF.length - 1][0] + 864e5), 1]]);
@@ -423,10 +423,20 @@ curve($("#introCurve"), Date.UTC(2019, 1, 8), { label: "Example account", sub: "
 const STATS = [["Level","level",100],["Experience","exp",null],["Likes","likes",null],["Honor score","honor",100],["BR rank points","brPoints",null],["CS rank points","csPoints",null],["Badges","badges",null]];
 const ICON_COPY = '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 012-2h9"/></svg>';
 
+// The image service returns a flat grey "NOT FOUND" picture when it has no image for an ID. Detect it and skip it.
+function isPlaceholder(im) {
+  try {
+    const c = document.createElement("canvas"); c.width = c.height = 32;
+    const x = c.getContext("2d", { willReadFrequently: true }); x.drawImage(im, 0, 0, 32, 32);
+    const d = x.getImageData(0, 0, 32, 32).data; let g = 0;
+    for (let i = 0; i < d.length; i += 4) { const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]); if (mx - mn <= 10 && mx >= 150) g++; }
+    return g / 1024 > .9;
+  } catch (e) { return false; }
+}
 function setImage(box, src, onOk) {
   if (!src) return;
-  const im = new Image(); im.referrerPolicy = "no-referrer"; im.alt = "";
-  im.onload = () => onOk(im); im.src = src;
+  const im = new Image(); im.referrerPolicy = "no-referrer"; im.crossOrigin = "anonymous"; im.alt = "";
+  im.onload = () => { if (!isPlaceholder(im)) onOk(im); }; im.src = src;
 }
 
 function render(d) {
@@ -482,7 +492,7 @@ function render(d) {
     $("#rTxt").append(b, ` ${r.line}. This account is older than ${pct(r.older, 2)} of all Free Fire accounts.`);
     $("#cYear").textContent = pct(r.year); $("#cYearL").textContent = "of all accounts were created in " + r.y;
     $("#cMonth").textContent = pct(r.month); $("#cMonthL").textContent = "were created in " + new Date(Date.UTC(r.y, r.mo, 1)).toLocaleString("en-US", { month: "long", timeZone: "UTC" }) + " " + r.y;
-    curve($("#resCurve"), d.createdAt, { label: name, sub: "Created " + d0(d.createdAt) + " · older than " + pct(r.older) });
+    curve($("#resCurve"), d.createdAt, { label: name.length > 26 ? name.slice(0, 25) + "…" : name, sub: "Created " + d0(d.createdAt) + " · older than " + pct(r.older) });
     d._r = r;
   }
 
@@ -534,7 +544,7 @@ $("#again").onclick = () => { document.body.classList.remove("res"); uid.value =
 
 /* ---------- report card image (same output on phone and desktop) ---------- */
 const sdt = (ms) => { const d = new Date(ms); return d.toLocaleDateString("en-US") + " · " + d.toLocaleTimeString("en-US"); };
-function loadImg(src) { return new Promise((r) => { const i = new Image(); i.crossOrigin = "anonymous"; i.onload = () => r(i); i.onerror = () => r(null); i.src = src; }); }
+function loadImg(src) { return new Promise((r) => { const i = new Image(); i.crossOrigin = "anonymous"; i.onload = () => r(isPlaceholder(i) ? null : i); i.onerror = () => r(null); i.src = src; }); }
 async function makeCard() {
   const d = last, W = 1080, M = 48, CX = M, CW = W - M * 2, P = 48;
   const HF = "'Inter Tight',Inter,system-ui,sans-serif", BF = "Inter,system-ui,sans-serif";
@@ -561,7 +571,7 @@ async function makeCard() {
   const yStats = y; if (stats.length) y += 70 + Math.ceil(stats.length / 3) * 112 + 28;
   const yRar = y; y += 40 + 44 + 34 + 18 + 40;
   const yBox = y; const boxH = 36 + sumHeadL.length * 42 + 10 + sumBodyL.length * 44 + 36; y += boxH + 44;
-  const yFoot = y; y += 104;
+  const yFoot = y; y += 100;
   const H = y + M;
 
   const c = document.createElement("canvas"); c.width = W; c.height = H; const x = c.getContext("2d");
@@ -621,16 +631,9 @@ async function makeCard() {
   ty += 10 - 2;
   sumBodyL.forEach((l) => { t(l, CX + P + 36, ty, `400 30px ${BF}`, SUB); ty += 44; });
 
-  // footer: Instagram
+  // footer
   x.fillStyle = LINE; x.fillRect(CX, yFoot, CW, 2);
-  const s = 60, ix = CX + P, iy = yFoot + 22;
-  const ig = x.createRadialGradient(ix + s * .3, iy + s * 1.07, 0, ix + s * .3, iy + s * 1.07, s * 1.25);
-  ig.addColorStop(0, "#fdf497"); ig.addColorStop(.05, "#fdf497"); ig.addColorStop(.45, "#fd5949"); ig.addColorStop(.6, "#d6249f"); ig.addColorStop(.9, "#285aeb");
-  rr(ix, iy, s, s, 18); x.fillStyle = ig; x.fill();
-  x.strokeStyle = "#fff"; x.lineWidth = 3.4; rr(ix + 14, iy + 14, s - 28, s - 28, 9); x.stroke(); x.beginPath(); x.arc(ix + s / 2, iy + s / 2, 7.5, 0, Math.PI * 2); x.stroke();
-  x.fillStyle = "#fff"; x.beginPath(); x.arc(ix + s - 19, iy + 19, 2.4, 0, Math.PI * 2); x.fill();
-  t(IG, ix + s + 20, iy + 41, `600 32px ${BF}`);
-  if (r) t("Rarity is estimated", CX + CW - P, iy + 40, `400 24px ${BF}`, LAB, "right");
+  t(r ? "Rarity is estimated and not an official number." : "Free Fire profile report", CX + P, yFoot + 62, `400 24px ${BF}`, LAB);
   x.restore();
   return new Promise((res) => c.toBlob(res, "image/png"));
 }

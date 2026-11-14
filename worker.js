@@ -128,6 +128,16 @@ export default {
       const rg = (url.searchParams.get("region") || "IND").trim().toUpperCase();
       if (!/^\d{6,12}$/.test(u) || !/^[A-Z]{2,4}$/.test(rg) || !env.HL_USERUID || !env.HL_API_KEY)
         return new Response("bad request", { status: 400, headers: CORS });
+      const iid = (url.searchParams.get("id") || "").replace(/\D/g, "").slice(0, 12);
+      // Optional: your own icon CDN. Set AVATAR_URL / BANNER_URL like https://example.com/icons/{id}.png
+      const tpl = kind === "banner" ? env.BANNER_URL : env.AVATAR_URL;
+      if (tpl && iid) {
+        try {
+          const own = await fetch(tpl.replace("{id}", iid));
+          if (own.ok && /^image\//.test(own.headers.get("Content-Type") || ""))
+            return new Response(own.body, { headers: { "Content-Type": own.headers.get("Content-Type"), "Cache-Control": "public, max-age=86400", ...CORS } });
+        } catch (e) {}
+      }
       const imgs = await getImages(env, u, rg, ctx);
       if (!imgs[kind]) return new Response("not found", { status: 404, headers: CORS });
       const img = await fetch(imgs[kind]);
@@ -191,8 +201,8 @@ export default {
         bio: str(find(info, ["AccountSignature", "Signature", "Bio"])),
         avatarId: str(find(info, ["AccountAvatarId", "AvatarId", "HeadPic", "AccountAvatar"])),
         bannerId: str(find(info, ["AccountBannerId", "BannerId", "AccountBanner"])),
-        avatar: `/api/avatar?uid=${uid}&region=${region}`,
-        banner: `/api/banner?uid=${uid}&region=${region}`,
+        avatar: `/api/avatar?uid=${uid}&region=${region}&id=${encodeURIComponent(str(find(info, ["AccountAvatarId", "AvatarId", "HeadPic", "AccountAvatar"])) || "")}`,
+        banner: `/api/banner?uid=${uid}&region=${region}&id=${encodeURIComponent(str(find(info, ["AccountBannerId", "BannerId", "AccountBanner"])) || "")}`,
         extra: flat,
         createdAt: toMs(find(info, ["AccountCreateTime"])),
         lastLogin: toMs(find(info, ["AccountLastLogin", "AccountLastLoginTime", "LastLoginAt"])),
