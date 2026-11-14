@@ -115,11 +115,55 @@ async function fetchImages(env, uid, region) {
   return out;
 }
 
+// ---------- Recent searches (stored in Cloudflare KV, binding name: CHECKS) ----------
+const MAX_RECENT = 100;
+const SHOW_RECENT = 3;
+
+async function recordCheck(env, d) {
+  if (!env.CHECKS || !d.nickname) return;
+  try {
+    // One UID is listed only once, ever: a repeat search changes nothing.
+    const seenKey = `seen:${d.uid}`;
+    if (await env.CHECKS.get(seenKey)) return;
+    const [list, total] = await Promise.all([env.CHECKS.get("recent", "json"), env.CHECKS.get("total")]);
+    const cur = Array.isArray(list) ? list : [];
+    if (cur.some((e) => e.uid === d.uid)) { await env.CHECKS.put(seenKey, "1"); return; }
+    const entry = { uid: d.uid, region: d.region, name: String(d.nickname).slice(0, 40), level: d.level, t: Date.now() };
+    const next = [entry, ...cur].slice(0, MAX_RECENT);
+    await Promise.all([
+      env.CHECKS.put("recent", JSON.stringify(next)),
+      env.CHECKS.put(seenKey, "1"),
+      env.CHECKS.put("total", String((Number(total) || 0) + 1)),
+    ]);
+  } catch (e) {}
+}
+
+async function getRecent(env) {
+  if (!env.CHECKS) return { enabled: false, total: 0, items: [] };
+  try {
+    const [list, total] = await Promise.all([env.CHECKS.get("recent", "json"), env.CHECKS.get("total")]);
+    const items = (Array.isArray(list) ? list : []).slice(0, SHOW_RECENT).map((e) => ({
+      name: e.name, uid: e.uid, region: e.region, level: e.level ?? null, at: e.t,
+    }));
+    return { enabled: true, total: Math.max(Number(total) || 0, (Array.isArray(list) ? list.length : 0)), items };
+  } catch (e) {
+    return { enabled: false, total: 0, items: [] };
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
 
     const url = new URL(request.url);
+
+    // /api/recent -> the 3 most recent checks (public)
+    if (url.pathname.endsWith("/recent")) {
+      const out = await getRecent(env);
+      return new Response(JSON.stringify(out), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...CORS },
+      });
+    }
 
     // /api/avatar?uid=..&region=.. -> streams the image with CORS so the browser and canvas can use it
     if (url.pathname.endsWith("/avatar") || url.pathname.endsWith("/banner")) {
@@ -185,7 +229,7 @@ export default {
         return json({ error: "Player not found. Check the UID and region." }, 404);
       }
 
-      return json({
+      const result = {
         uid,
         nickname: str(find(info, ["AccountName"])),
         region,
@@ -206,7 +250,9 @@ export default {
         extra: flat,
         createdAt: toMs(find(info, ["AccountCreateTime"])),
         lastLogin: toMs(find(info, ["AccountLastLogin", "AccountLastLoginTime", "LastLoginAt"])),
-      });
+      };
+      if (url.searchParams.get("silent") !== "1") ctx.waitUntil(recordCheck(env, result));
+      return json(result);
     } catch (e) {
       return json({ error: "Could not fetch data from the API." }, 502);
     }

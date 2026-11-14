@@ -210,6 +210,38 @@ details[open] summary{margin-bottom:6px}
   .pad{padding:20px 18px}
   .crumbs{flex-wrap:wrap;gap:12px}
 }
+
+/* ---------- recent searches ---------- */
+.rc{margin-top:30px;max-width:460px;background:var(--surface);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden;position:relative}
+.rc[hidden]{display:none}
+.rc:before{content:"";position:absolute;inset:0 0 auto 0;height:3px;background:linear-gradient(90deg,#7e9bff,#c07bff,#ff8a7a);opacity:.9}
+.rch{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:20px 20px 14px}
+.rch h3{font-family:var(--head);font-weight:600;font-size:16px;letter-spacing:-.015em;display:flex;align-items:center;gap:10px}
+.live{position:relative;width:9px;height:9px;border-radius:50%;background:var(--ok);flex:none}
+.live:after{content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid var(--ok);opacity:0;animation:lv 2s ease-out infinite}
+@keyframes lv{0%{transform:scale(.5);opacity:.7}100%{transform:scale(1.5);opacity:0}}
+.rcn{display:inline-flex;align-items:center;height:26px;padding:0 11px;border-radius:99px;background:var(--accent-soft);color:var(--accent);font-size:12.5px;font-weight:600;white-space:nowrap}
+.rcl{list-style:none;padding:0 10px 10px;display:grid;gap:6px}
+.rci{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:14px;padding:13px 12px;border-radius:14px;background:var(--sunken);border:1px solid var(--line);animation:rv .6s var(--ease) both;animation-delay:calc(var(--i,0)*90ms);transition:border-color .2s,transform .2s var(--ease)}
+.rci:hover{border-color:var(--line-strong);transform:translateY(-1px)}
+.rci.new{border-color:var(--accent);background:linear-gradient(0deg,var(--accent-soft),var(--accent-soft)),var(--sunken)}
+.rca{position:relative;display:grid;place-items:center;width:46px;height:46px;border-radius:50%;color:#fff;font-family:var(--head);font-weight:700;font-size:19px;box-shadow:0 0 0 3px var(--surface),0 0 0 4px var(--line-strong)}
+.rcm{min-width:0}
+.rcm .nm2{display:flex;align-items:center;gap:8px;min-width:0}
+.rcm b{font-family:var(--head);font-weight:600;font-size:15.5px;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tag{flex:none;height:18px;padding:0 7px;border-radius:99px;background:var(--accent);color:var(--accent-ink);font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;display:inline-flex;align-items:center}
+.uidr{display:flex;align-items:center;gap:6px;margin-top:3px}
+.uidr code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:500;letter-spacing:.04em;color:var(--sub)}
+.cpb{display:grid;place-items:center;width:24px;height:24px;border:0;border-radius:7px;background:transparent;color:var(--faint);transition:background .2s,color .2s}
+.cpb:hover{background:var(--line);color:var(--ink)}
+.cpb svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.cps{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.cp2{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:7px;background:var(--surface);border:1px solid var(--line);font-size:11.5px;font-weight:500;color:var(--ink)}
+.rci time{align-self:start;font-size:11.5px;font-weight:500;color:var(--faint);white-space:nowrap;padding-top:3px}
+.rc-empty{padding:26px 18px 30px;text-align:center}
+.rc-empty b{display:block;font-family:var(--head);font-weight:600;font-size:15px}
+.rc-empty span{display:block;margin-top:4px;font-size:13px;color:var(--sub)}
+@media(max-width:640px){.rch{padding:18px 16px 12px}.rcl{padding:0 8px 8px}.rci{gap:12px;padding:12px 10px}.rca{width:42px;height:42px;font-size:17px}.rci time{font-size:11px}}
 </style>
 </head>
 <body>
@@ -230,6 +262,10 @@ details[open] summary{margin-bottom:6px}
       <button class="go" id="go" type="submit"><span id="goText">View profile</span></button>
       <p class="err" id="error" role="alert"></p>
     </form>
+    <section class="rc" id="recent" hidden aria-label="Recent searches">
+      <div class="rch"><h3><i class="live"></i>Live searches</h3><span class="rcn" id="rcCount"></span></div>
+      <ul class="rcl" id="rcList"></ul>
+    </section>
   </div>
   <div class="panel">
     <div class="pv">
@@ -536,11 +572,47 @@ $("#form").onsubmit = async (e) => {
   try {
     const res = await fetch(`${API}?uid=${id}&region=${region}`), data = await res.json();
     if (!res.ok) throw new Error(data.error || "Something went wrong. Try again.");
-    render(data);
+    render(data); setTimeout(loadRecent, 1500);
   } catch (x) { err.textContent = x.message || "Network error. Check your connection and try again."; }
   finally { btn.disabled = false; btn.classList.remove("loading"); $("#goText").textContent = "View profile"; }
 };
-$("#again").onclick = () => { document.body.classList.remove("res"); uid.value = ""; uid.focus({ preventScroll: true }); scrollTo({ top: 0 }); };
+$("#again").onclick = () => { loadRecent(); document.body.classList.remove("res"); uid.value = ""; uid.focus({ preventScroll: true }); scrollTo({ top: 0 }); };
+
+/* ---------- recent searches feed ---------- */
+const rcBox = $("#recent"), rcList = $("#rcList");
+let rcSig = "";
+const hue = (u) => (parseInt(u.slice(-5), 10) * 47) % 360;
+const regFlag = (c) => { const r = REGIONS.find((x) => x[0] === c); return r ? r[2] : "\ud83c\udf10"; };
+async function loadRecent() {
+  try {
+    const r = await fetch(API + "/recent", { cache: "no-store" }), d = await r.json();
+    if (!d.enabled) return;
+    rcBox.hidden = false;
+    $("#rcCount").textContent = nf(d.total) + " checked";
+    const sig = d.items.map((i) => i.uid + i.region + i.at).join("|");
+    if (sig === rcSig) { rcList.querySelectorAll("time").forEach((t, i) => (t.textContent = ago(d.items[i].at))); return; }
+    rcSig = sig; rcList.textContent = "";
+    if (!d.items.length) {
+      const li = el("li", "rc-empty"); li.append(el("b", null, "No searches yet"), el("span", null, "Check a player UID and it shows up here for everyone."));
+      rcList.append(li); return;
+    }
+    d.items.forEach((it, i) => {
+      const li = el("li", "rci" + (i === 0 ? " new" : "")); li.style.setProperty("--i", i);
+      const h1 = hue(it.uid), av = el("span", "rca", (Array.from(it.name)[0] || "?").toUpperCase());
+      av.style.background = `linear-gradient(135deg,hsl(${h1} 72% 54%),hsl(${(h1 + 48) % 360} 70% 42%))`;
+      const mid = el("div", "rcm"), nm = el("div", "nm2"); nm.append(el("b", null, it.name)); if (i === 0) nm.append(el("span", "tag", "Latest"));
+      const ur = el("div", "uidr"), code = el("code", null, it.uid), cb = el("button", "cpb"); cb.type = "button"; cb.title = "Copy UID"; cb.setAttribute("aria-label", "Copy UID " + it.uid); cb.innerHTML = ICON_COPY;
+      cb.onclick = () => { navigator.clipboard && navigator.clipboard.writeText(it.uid); cb.style.color = "var(--ok)"; setTimeout(() => (cb.style.color = ""), 900); };
+      ur.append(code, cb);
+      const chips = el("div", "cps"); chips.append(el("span", "cp2", regFlag(it.region) + " " + it.region)); if (it.level) chips.append(el("span", "cp2", "Lv " + it.level));
+      mid.append(nm, ur, chips);
+      li.append(av, mid, el("time", null, ago(it.at)));
+      rcList.append(li);
+    });
+  } catch (e) {}
+}
+loadRecent();
+setInterval(() => { if (!document.body.classList.contains("res") && !document.hidden) loadRecent(); }, 30000);
 
 /* ---------- report card image (same output on phone and desktop) ---------- */
 const sdt = (ms) => { const d = new Date(ms); return d.toLocaleDateString("en-US") + " · " + d.toLocaleTimeString("en-US"); };
