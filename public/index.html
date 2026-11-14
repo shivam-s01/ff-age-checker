@@ -181,7 +181,8 @@ details[open] summary{margin-bottom:6px}
 .pv2{max-width:560px;max-height:92svh;padding:16px}
 .pimg{display:flex;justify-content:center;border-radius:10px;border:1px solid var(--line);background:var(--sunken);min-height:0;overflow:hidden}
 .pimg img{display:block;max-width:100%;max-height:calc(92svh - 120px);width:auto;height:auto}
-.pact{display:flex;gap:10px;justify-content:flex-end;margin-top:14px}
+.pact{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;margin-top:14px}
+.pact .tbtn{flex:1 1 auto;justify-content:center;min-height:44px}
 .reveal{animation:rv .7s var(--ease) both;animation-delay:calc(var(--d,0)*1ms)}
 @keyframes rv{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
@@ -252,7 +253,7 @@ details[open] summary{margin-bottom:6px}
     <h2>Player report</h2>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <button class="tbtn" id="again"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>New search</button>
-      <button class="tbtn pri" id="shareCard"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Save report card</button>
+      <button class="tbtn pri" id="shareCard"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg><span>Download card</span></button>
     </div>
   </div>
 
@@ -308,7 +309,6 @@ details[open] summary{margin-bottom:6px}
 </section>
 </main>
 
-<div class="sheet" id="prev" role="dialog" aria-modal="true" aria-label="Report card"><div class="bk" id="pbk"></div><div class="pn pv2"><div class="pimg"><img id="pimg" alt="Report card"></div><div class="pact"><button class="tbtn" id="pclose">Close</button><button class="tbtn pri" id="pdl">Download image</button></div></div></div>
 
 <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Select server region"><div class="bk" id="bk"></div><div class="pn"><h2>Select server region</h2><input class="input" id="rq" type="search" placeholder="Search country or server" autocomplete="off"><ul id="rl"></ul></div></div>
 
@@ -338,7 +338,7 @@ function list() {
 function openSheet() { rq.value = ""; list(); sheet.classList.add("open"); setTimeout(() => rq.focus({ preventScroll: true }), 50); }
 function closeSheet() { sheet.classList.remove("open"); rq.blur(); }
 $("#reg").onclick = openSheet; $("#bk").onclick = closeSheet; rq.oninput = list;
-addEventListener("keydown", (e) => { if (e.key === "Escape") { closeSheet(); closePrev(); } });
+addEventListener("keydown", (e) => { if (e.key === "Escape") { closeSheet(); } });
 paintReg();
 uid.oninput = () => { uid.value = uid.value.replace(/\D/g, ""); err.textContent = ""; };
 
@@ -638,23 +638,17 @@ async function makeCard() {
   return new Promise((res) => c.toBlob(res, "image/png"));
 }
 
-let prevUrl = null, prevFile = null;
-function closePrev() { $("#prev").classList.remove("open"); }
-$("#pbk").onclick = closePrev; $("#pclose").onclick = closePrev;
 async function share() {
   if (!last) return;
-  const b = $("#shareCard"), label = b.lastChild.textContent; b.disabled = true; b.lastChild.textContent = "Creating…";
+  const b = $("#shareCard"), lab = b.querySelector("span"), old = lab.textContent; b.disabled = true; lab.textContent = "Creating…";
   try {
-    const blob = await makeCard(); if (prevUrl) URL.revokeObjectURL(prevUrl);
-    prevUrl = URL.createObjectURL(blob); prevFile = new File([blob], "ff-profile-" + last.uid + ".png", { type: "image/png" });
-    $("#pimg").src = prevUrl; $("#prev").classList.add("open");
-    const canShare = navigator.canShare && navigator.canShare({ files: [prevFile] }) && /Mobi|Android/i.test(navigator.userAgent);
-    $("#pdl").textContent = canShare ? "Share image" : "Download image";
-    $("#pdl").onclick = async () => {
-      if (canShare) { try { await navigator.share({ files: [prevFile], title: "Free Fire profile" }); return; } catch (e) { if (e.name === "AbortError") return; } }
-      const a = el("a"); a.href = prevUrl; a.download = prevFile.name; a.click();
-    };
-  } finally { b.disabled = false; b.lastChild.textContent = label; }
+    const blob = await makeCard(), url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "ff-profile-" + last.uid + ".png"; a.style.display = "none";
+    document.body.append(a); a.click();
+    setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
+    lab.textContent = "Downloaded"; setTimeout(() => (lab.textContent = old), 2200);
+  } catch (e) { lab.textContent = "Try again"; setTimeout(() => (lab.textContent = old), 2200); }
+  finally { b.disabled = false; }
 }
 $("#shareCard").onclick = share;
 </script>
