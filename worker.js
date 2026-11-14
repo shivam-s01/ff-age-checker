@@ -50,6 +50,57 @@ const toMs = (v) => {
 const num = (v) => (v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
 const str = (v) => (v === null || v === undefined || v === "" ? null : String(v).slice(0, 200));
 
+
+// ---------- Rate-limit (429) protection ----------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// fetch with retry on 429 / 5xx (waits 0.7s, then 1.5s)
+async function hlFetch(url, tries = 3) {
+  let res;
+  for (let i = 0; i < tries; i++) {
+    res = await fetch(url);
+    if (res.status !== 429 && res.status < 500) return res;
+    if (i < tries - 1) await sleep(i === 0 ? 700 : 1500);
+  }
+  return res;
+}
+
+// Our own cache. workers.dev ignores the Cache API, so we layer: memory (per isolate) -> Cache API -> KV.
+const FRESH_S = 1800, STALE_S = 86400;
+const mem = new Map();
+async function cacheGet(name) {
+  const m = mem.get(name);
+  if (m && m.exp > Date.now()) return m.data;
+  if (typeof caches === "undefined") return null;
+  try {
+    const hit = await caches.default.match(new Request(`https://cache.local/${name}`));
+    return hit ? await hit.json() : null;
+  } catch (e) { return null; }
+}
+function cachePut(ctx, name, data, ttl) {
+  mem.set(name, { exp: Date.now() + ttl * 1000, data });
+  if (mem.size > 500) mem.delete(mem.keys().next().value);
+  if (typeof caches === "undefined") return;
+  try {
+    const put = caches.default.put(
+      new Request(`https://cache.local/${name}`),
+      new Response(JSON.stringify(data), { headers: { "Cache-Control": `max-age=${ttl}`, "Content-Type": "application/json" } })
+    ).catch(() => {});
+    if (ctx && ctx.waitUntil) ctx.waitUntil(put);
+  } catch (e) {}
+}
+// KV copy of the main profile data (survives across isolates/colos, used as stale fallback)
+async function kvGetRaw(env, key) {
+  if (!env.CHECKS) return null;
+  try { return await env.CHECKS.get("raw:" + key, "json"); } catch (e) { return null; }
+}
+function kvPutRaw(env, ctx, key, raw) {
+  if (!env.CHECKS) return;
+  const p = env.CHECKS.put("raw:" + key, JSON.stringify({ t: Date.now(), d: raw }), { expirationTtl: STALE_S }).catch(() => {});
+  if (ctx && ctx.waitUntil) ctx.waitUntil(p);
+}
+const inflight = new Map(); // avatar + banner requests share one upstream call
+
 const IMG_API = "https://proapis.hlgamingofficial.com/main/games/freefire/meta/api";
 
 // Find the first http(s) image URL anywhere in an object
@@ -64,21 +115,24 @@ function findUrl(node, depth = 0) {
   return null;
 }
 
-// Signed image URLs expire in ~5 minutes, so never cache these calls.
+// Signed image URLs expire in ~5 minutes. Cache 4 min; cache failures 60s so we don't hammer the API.
 async function getImages(env, uid, region, ctx) {
-  const cache = typeof caches !== "undefined" ? caches.default : null;
-  const key = new Request(`https://img-cache.local/${region}/${uid}`);
-  if (cache) { const hit = await cache.match(key); if (hit) return hit.json(); }
-  const out = await fetchImages(env, uid, region);
-  if (cache && (out.avatar || out.banner)) {
-    const put = cache.put(key, new Response(JSON.stringify(out), { headers: { "Cache-Control": "max-age=240", "Content-Type": "application/json" } }));
-    ctx && ctx.waitUntil ? ctx.waitUntil(put) : await put;
-  }
-  return out;
+  const name = `img/${region}/${uid}`;
+  const hit = await cacheGet(name);
+  if (hit) return hit;
+  if (inflight.has(name)) return inflight.get(name);
+  const p = (async () => {
+    const out = await fetchImages(env, uid, region);
+    cachePut(ctx, name, out, out.avatar || out.banner ? 240 : 60);
+    return out;
+  })();
+  inflight.set(name, p);
+  try { return await p; } finally { inflight.delete(name); }
 }
 async function fetchImages(env, uid, region) {
   const out = { avatar: null, banner: null };
   const base = env.API_URL || DEFAULT_API;
+  let limited = false;
   try {
     const u = new URL(base);
     u.searchParams.set("sectionName", "AllData");
@@ -87,7 +141,8 @@ async function fetchImages(env, uid, region) {
     u.searchParams.set("useruid", env.HL_USERUID);
     u.searchParams.set("api", env.HL_API_KEY);
     u.searchParams.set("filter", "isIMG");
-    const r = await fetch(u.toString());
+    const r = await hlFetch(u.toString(), 2);
+    if (r.status === 429) limited = true;
     if (r.ok) {
       const j = await r.json();
       const info = j.AccountInfo || j.accountInfo || j;
@@ -95,7 +150,7 @@ async function fetchImages(env, uid, region) {
       out.banner = findUrl({ a: info.AccountBannerId });
     }
   } catch (e) {}
-  if (out.avatar) return out;
+  if (out.avatar || limited) return out; // don't call a 2nd endpoint when rate-limited
   try {
     const u = new URL(IMG_API);
     u.searchParams.set("sectionName", "image");
@@ -104,7 +159,7 @@ async function fetchImages(env, uid, region) {
     u.searchParams.set("playeruid", uid);
     u.searchParams.set("region", region.toLowerCase());
     u.searchParams.set("isBeta", "true");
-    const r = await fetch(u.toString());
+    const r = await hlFetch(u.toString(), 2);
     if (r.ok) {
       const j = await r.json();
       const res = j.result || j;
@@ -208,9 +263,30 @@ export default {
     api.searchParams.set("api", env.HL_API_KEY);
 
     try {
-      const res = await fetch(api.toString(), { cf: { cacheTtl: 3600, cacheEverything: true } });
-      if (!res.ok) return json({ error: `API error (${res.status})` }, 502);
-      const raw = await res.json();
+      const key = `${region}/${uid}`;
+      let raw = await cacheGet("raw/" + key); // memory / edge cache (fresh)
+      let stale = null;
+      if (!raw) {
+        const kv = await kvGetRaw(env, key);
+        if (kv && kv.d) {
+          if (Date.now() - kv.t < FRESH_S * 1000) { raw = kv.d; cachePut(ctx, "raw/" + key, raw, 300); }
+          else stale = kv.d;
+        }
+      }
+      if (!raw) {
+        const res = await hlFetch(api.toString(), 3);
+        if (res.ok) {
+          raw = await res.json();
+          cachePut(ctx, "raw/" + key, raw, FRESH_S);
+          kvPutRaw(env, ctx, key, raw);
+        } else if (stale) {
+          raw = stale; // upstream failed / rate-limited: serve the old copy
+        } else if (res.status === 429) {
+          return json({ error: "Server is busy right now. Please try again in a few seconds." }, 429);
+        } else {
+          return json({ error: "Could not reach the game API. Please try again shortly." }, 502);
+        }
+      }
 
       if (url.searchParams.get("raw") === "1") return json(raw);
       const flat = {};
